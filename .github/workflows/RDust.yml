@@ -1,12 +1,142 @@
-name: Windows - RustDesk
-on: workflow_dispatch
+name: Windows RDP with RustDesk
+on:
+  workflow_dispatch:    # Manual trigger
+  repository_dispatch:  # API trigger for auto-restart
+
 jobs:
-  build:
+  rdp:
     runs-on: windows-latest
-    timeout-minutes: 360  # 6 hours max
+    timeout-minutes: 360  # 6-hour max
     steps:
-      - name: Install RustDesk & Tools
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Network diagnostic
         run: |
-          Invoke-WebRequest -Uri "https://github.com/rustdesk/rustdesk/releases/download/1.2.3/rustdesk-1.2.3-x86_64.exe" -OutFile "rustdesk.exe"
-          Start-Process -Wait -FilePath "rustdesk.exe" -ArgumentList "/VERYSILENT /SUPPRESSMSGBOXES"
-          Set-LocalUser -Name "Admin" -Password (ConvertTo-SecureString "BCOibadan2$!" -AsPlainText -Force)
+          Write-Host "Testing connectivity to RustDesk CDN..."
+          Test-NetConnection -ComputerName rustdesk.com -Port 443
+          Write-Host "✅ Network test completed"
+
+      - name: Download RustDesk (robust)
+        run: |
+          $ProgressPreference = 'SilentlyContinue'
+          $url = "https://rustdesk.com/downloads/rustdesk-1.2.3-x86_64.exe"
+          $retryCount = 0
+          $maxRetries = 3
+          
+          while ($retryCount -lt $maxRetries) {
+              try {
+                  Write-Host "Download attempt $($retryCount + 1)/$maxRetries"
+                  Invoke-WebRequest -Uri $url -OutFile rustdesk.exe -TimeoutSec 25
+                  
+                  if (Test-Path rustdesk.exe) {
+                      $fileSize = (Get-Item rustdesk.exe).Length
+                      if ($fileSize -gt 10MB) {
+                          Write-Host "✅ Download success! Size: $($fileSize/1MB) MB"
+                          break
+                      }
+                      Remove-Item rustdesk.exe -Force
+                  }
+              }
+              catch {
+                  Write-Host "⚠️ Attempt failed: $($_.Exception.Message)"
+              }
+              
+              $retryCount++
+              if ($retryCount -lt $maxRetries) {
+                  $delay = 10 * $retryCount
+                  Write-Host "⏱ Retrying in $delay seconds..."
+                  Start-Sleep -Seconds $delay
+              }
+              else {
+                  Write-Host "::error::❌ Download failed after $maxRetries attempts"
+                  exit 1
+              }
+          }
+          
+      - name: Install RustDesk
+        run: |
+          Start-Process -Wait -FilePath .\rustdesk.exe -ArgumentList "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART"
+          if (Test-Path "C:\Program Files\RustDesk\rustdesk.exe") {
+              Write-Host "✅ RustDesk installed successfully"
+          } else {
+              Write-Host "::error::❌ Installation failed!"
+              exit 1
+          }
+
+      - name: Configure Admin Account
+        run: |
+          $Password = ConvertTo-SecureString "BCOibadan29$$!" -AsPlainText -Force
+          Set-LocalUser -Name "runneradmin" -Password $Password
+          Write-Host "🔑 Password set for runneradmin"
+          # Enable network discovery
+          Set-NetFirewallProfile -Profile Domain,Public,Private -Enabled False
+
+      - name: Start RustDesk Service
+        run: |
+          Start-Process "C:\Program Files\RustDesk\rustdesk.exe" -ArgumentList "--service"
+          Start-Sleep -Seconds 15
+          Write-Host "🚀 RustDesk service started"
+
+      - name: Retrieve Connection ID
+        run: |
+          $idFile = "$env:USERPROFILE\.config\RustDesk\id"
+          $attempt = 0
+          while ($attempt -lt 5) {
+              if (Test-Path $idFile) {
+                  $rustdeskID = Get-Content $idFile -Raw
+                  Write-Host "🆔 RustDesk ID: $rustdeskID"
+                  break
+              }
+              $attempt++
+              Write-Host "Waiting for ID file... ($attempt/5)"
+              Start-Sleep -Seconds 10
+          }
+          if (-not (Test-Path $idFile)) {
+              Write-Host "::warning::⚠️ RustDesk ID not found!"
+          }
+
+      - name: Schedule Auto-Restart
+        env:
+          PAT: ${{ secrets.PAT }}
+          REPO_NAME: ${{ secrets.REPO_NAME }}
+        run: |
+          Write-Host "⏰ Scheduling auto-restart in 5h59m..."
+          # Background process to trigger new workflow
+          Start-Process powershell -ArgumentList @"
+            Start-Sleep -Seconds 21540
+            `$headers = @{
+                'Authorization' = 'Bearer $env:PAT'
+                'Accept' = 'application/vnd.github+json'
+                'X-GitHub-Api-Version' = '2022-11-28'
+            }
+            `$body = @{ ref = 'main' } | ConvertTo-Json
+            Invoke-RestMethod `
+              -Uri 'https://api.github.com/repos/$env:REPO_NAME/actions/workflows/rustdesk.yml/dispatches' `
+              -Method Post `
+              -Headers `$headers `
+              -Body `$body
+            Write-Host '♻️ Auto-restart triggered'
+"@ -WindowStyle Hidden
+          Write-Host "✅ Restart scheduled! New session will start before this ends"
+
+  # Auto-restart trigger
+  restart_trigger:
+    name: Initiate New Session
+    runs-on: ubuntu-latest
+    needs: rdp
+    if: always()  # Run even if previous job fails
+    steps:
+      - name: Trigger new workflow
+        env:
+          PAT: ${{ secrets.PAT }}
+          REPO_NAME: ${{ secrets.REPO_NAME }}
+        run: |
+          echo "♻️ Starting new session..."
+          curl -L -X POST \
+            -H "Authorization: Bearer $PAT" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/$REPO_NAME/actions/workflows/rustdesk.yml/dispatches" \
+            -d '{"ref":"main"}'
+          echo "✅ New session initiated"
