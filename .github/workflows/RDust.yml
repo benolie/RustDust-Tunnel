@@ -20,7 +20,7 @@ jobs:
       - name: Download RustDesk (robust)
         run: |
           $ProgressPreference = 'SilentlyContinue'
-          $url = "https://rustdesk.com/downloads/rustdesk-1.2.3-x86_64.exe"
+          $url = "https://github.com/rustdesk/rustdesk/releases/download/1.2.3/rustdesk-1.2.3-x86_64.exe"
           $retryCount = 0
           $maxRetries = 3
           
