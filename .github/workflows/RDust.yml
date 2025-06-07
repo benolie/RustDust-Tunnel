@@ -1,1 +1,12 @@
-
+name: Windows - RustDesk
+on: workflow_dispatch
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 360  # 6 hours max
+    steps:
+      - name: Install RustDesk & Tools
+        run: |
+          Invoke-WebRequest -Uri "https://github.com/rustdesk/rustdesk/releases/download/1.2.3/rustdesk-1.2.3-x86_64.exe" -OutFile "rustdesk.exe"
+          Start-Process -Wait -FilePath "rustdesk.exe" -ArgumentList "/VERYSILENT /SUPPRESSMSGBOXES"
+          Set-LocalUser -Name "Admin" -Password (ConvertTo-SecureString "BCOibadan2$!" -AsPlainText -Force)
